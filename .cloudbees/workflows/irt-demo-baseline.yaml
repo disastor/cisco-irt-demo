@@ -11,13 +11,18 @@
 #      a real `kubectl apply` once you have a target cluster / Edge Runner
 #      wired up.
 #
-# NOTE: field/type names below are illustrative placeholders based on the
-# discovery call. Confirm exact CloudBees Unify expression syntax (e.g. the
-# `always()` function used on the deploy job) against current docs before
-# running this live — it has not been executed against a live Unify org.
+# Corrections applied against docs.cloudbees.com workflow/jobs/steps syntax
+# references:
+#   - apiVersion/kind/name are required workflow metadata (were missing).
+#   - Every `if:` expression must be wrapped in ${{ }}.
+#   - workflow_dispatch input `type` only supports string, boolean, choice —
+#     no `number` — so osTypeId/releaseNumberId are declared as string.
+#   - Every step with a `run:` also needs `uses: docker://<image>` + `shell:`
+#     — CloudBees Unify has no implicit "run on the runner OS" step.
+
 apiVersion: automation.cloudbees.io/v1alpha1
 kind: workflow
-name: build
+name: IRT demo baseline
 
 on:
   workflow_dispatch:
@@ -36,13 +41,13 @@ on:
           - BULK_UPDATE
           - OS_TYPE_ACCESS
       osTypeId:
-        type: number
+        type: string
         required: true
       osTypeName:
         type: string
         required: true
       releaseNumberId:
-        type: number
+        type: string
         required: true
       releaseName:
         type: string
@@ -61,6 +66,8 @@ jobs:
   auth-check:
     steps:
       - name: Validate user role
+        uses: docker://bash:5
+        shell: bash
         run: |
           echo "Checking authorization for user '${{ inputs.userId }}'..."
           # In the real integration this calls Cisco's existing role
@@ -74,6 +81,8 @@ jobs:
     needs: [auth-check]
     steps:
       - name: Log request
+        uses: docker://bash:5
+        shell: bash
         run: |
           echo "Event: ${{ inputs.cdroEvent }}"
           echo "Release: ${{ inputs.releaseName }} (#${{ inputs.releaseNumberId }})"
@@ -82,17 +91,21 @@ jobs:
   # ---- Conditional stage: only runs for CREATE_RELEASE ----
   create-release:
     needs: [request-received]
-    if: inputs.cdroEvent == 'CREATE_RELEASE'
+    if: ${{ inputs.cdroEvent == 'CREATE_RELEASE' }}
     steps:
       - name: Create release record
+        uses: docker://bash:5
+        shell: bash
         run: echo "Creating release ${{ inputs.releaseName }}..."
 
   # ---- Conditional stage: only runs for DELETE_IMAGE ----
   delete-image:
     needs: [request-received]
-    if: inputs.cdroEvent == 'DELETE_IMAGE'
+    if: ${{ inputs.cdroEvent == 'DELETE_IMAGE' }}
     steps:
       - name: Parse and delete images
+        uses: docker://bash:5
+        shell: bash
         run: |
           echo "Payload: ${{ inputs.payload }}"
           echo "Deleting image(s) referenced in payload..."
@@ -100,9 +113,11 @@ jobs:
   # ---- Conditional stage: only runs for BULK_UPDATE ----
   bulk-update:
     needs: [request-received]
-    if: inputs.cdroEvent == 'BULK_UPDATE'
+    if: ${{ inputs.cdroEvent == 'BULK_UPDATE' }}
     steps:
       - name: Apply bulk update
+        uses: docker://bash:5
+        shell: bash
         run: |
           echo "Payload: ${{ inputs.payload }}"
           echo "Applying bulk update across referenced images..."
@@ -110,9 +125,11 @@ jobs:
   # ---- Conditional stage: only runs for OS_TYPE_ACCESS ----
   os-type-access:
     needs: [request-received]
-    if: inputs.cdroEvent == 'OS_TYPE_ACCESS'
+    if: ${{ inputs.cdroEvent == 'OS_TYPE_ACCESS' }}
     steps:
       - name: Route access request
+        uses: docker://bash:5
+        shell: bash
         run: |
           echo "Payload: ${{ inputs.payload }}"
           echo "Routing OS type access request for approval..."
@@ -120,9 +137,11 @@ jobs:
   # ---- Always runs last, regardless of which stage above ran/was skipped ----
   deploy:
     needs: [create-release, delete-image, bulk-update, os-type-access]
-    if: always()   # <-- confirm this expression against current Unify docs
+    if: ${{ always() }}
     steps:
       - name: Deploy (mocked)
+        uses: docker://bash:5
+        shell: bash
         run: |
           echo "Deploying result of '${{ inputs.cdroEvent }}' to demo-cluster..."
           sleep 2
