@@ -127,7 +127,7 @@ jobs:
           echo "$GCP_SA_KEY" > /tmp/key.json
           gcloud auth activate-service-account --key-file=/tmp/key.json --quiet
           gcloud config set project ${{ env.GCP_PROJECT_ID }} --quiet
-          gcloud components install gke-gcloud-auth-plugin --quiet
+          apt-get update -qq && apt-get install -y -qq google-cloud-cli-gke-gcloud-auth-plugin
           gcloud container clusters get-credentials ${{ env.GCP_CLUSTER }} --zone ${{ env.GCP_ZONE }} --quiet
 
           kubectl create configmap "release-${{ inputs.releaseNumberId }}" \
@@ -153,7 +153,7 @@ jobs:
           echo "$GCP_SA_KEY" > /tmp/key.json
           gcloud auth activate-service-account --key-file=/tmp/key.json --quiet
           gcloud config set project ${{ env.GCP_PROJECT_ID }} --quiet
-          gcloud components install gke-gcloud-auth-plugin --quiet
+          apt-get update -qq && apt-get install -y -qq google-cloud-cli-gke-gcloud-auth-plugin
           gcloud container clusters get-credentials ${{ env.GCP_CLUSTER }} --zone ${{ env.GCP_ZONE }} --quiet
           command -v jq >/dev/null || (apt-get update -qq && apt-get install -y -qq jq)
 
@@ -185,7 +185,7 @@ jobs:
           echo "$GCP_SA_KEY" > /tmp/key.json
           gcloud auth activate-service-account --key-file=/tmp/key.json --quiet
           gcloud config set project ${{ env.GCP_PROJECT_ID }} --quiet
-          gcloud components install gke-gcloud-auth-plugin --quiet
+          apt-get update -qq && apt-get install -y -qq google-cloud-cli-gke-gcloud-auth-plugin
           gcloud container clusters get-credentials ${{ env.GCP_CLUSTER }} --zone ${{ env.GCP_ZONE }} --quiet
           command -v jq >/dev/null || (apt-get update -qq && apt-get install -y -qq jq)
 
@@ -221,7 +221,7 @@ jobs:
           echo "$GCP_SA_KEY" > /tmp/key.json
           gcloud auth activate-service-account --key-file=/tmp/key.json --quiet
           gcloud config set project ${{ env.GCP_PROJECT_ID }} --quiet
-          gcloud components install gke-gcloud-auth-plugin --quiet
+          apt-get update -qq && apt-get install -y -qq google-cloud-cli-gke-gcloud-auth-plugin
           gcloud container clusters get-credentials ${{ env.GCP_CLUSTER }} --zone ${{ env.GCP_ZONE }} --quiet
 
           kubectl create configmap "access-request-${{ inputs.userId }}" \
