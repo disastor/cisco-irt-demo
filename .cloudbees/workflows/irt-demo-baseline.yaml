@@ -6,11 +6,12 @@
 #      mock Release Ops Console).
 #   2. Payload is processed through a series of jobs (the "pipeline stages").
 #   3. Payload content decides which stage(s) run and which are skipped,
-#      via native `if:` conditionals. Multi-select: runCreateRelease /
-#      runDeleteImage / runBulkUpdate / runOsTypeAccess are independent
-#      boolean flags (not one choice field), so any combination can be
-#      true in the same request — e.g. new package version AND delete
-#      an image in one call, matching what their internal tool does today.
+#      via native `if:` conditionals. Multi-select: `actions` is one
+#      comma-separated string (not four separate flags — see the
+#      workflow_dispatch 10-input limit note below), checked with
+#      `contains()` per job. Any combination can be true in one
+#      request — e.g. new package version AND delete an image in the
+#      same call — matching what their internal tool does today.
 #   4. Output is a REAL deployment step against a GKE cluster — see
 #      gcp-setup.md for how to provision the cluster and secret this
 #      workflow depends on. Each job talks to Kubernetes directly via
@@ -31,13 +32,11 @@
 #     being documented. That rules out a single fan-in "deploy" job that
 #     needs all four conditional jobs. Fix: the deploy step lives at the
 #     end of each conditional job instead of a separate converging job.
-#   - NOT YET CONFIRMED: the four run* boolean inputs are compared with
-#     `== 'true'` (string), matching every other comparison in this file.
-#     Unverified whether a `type: boolean` input actually arrives as the
-#     string "true"/"false" or a real boolean at runtime — if these
-#     comparisons silently evaluate false the way `needsApproval` once
-#     did (trailing-newline bug, see the printf fix on check-approval),
-#     that's the first thing to check.
+#   - workflow_dispatch allows at most 10 inputs — confirmed by a live
+#     schema-validation error ("Must have at most 10 properties") when
+#     four separate boolean flags pushed the total to 11. Fixed by
+#     collapsing them into one comma-separated `actions` string, checked
+#     with `contains()` instead of four `== 'true'` comparisons.
 #
 # PREREQUISITES (see gcp-setup.md):
 #   - A GKE cluster named per GCP_CLUSTER below, with an `irt-demo`
@@ -61,26 +60,21 @@ on:
         type: string
         required: true
         description: Requesting user's ID
-      # Independent flags, not a single choice — lets a request select any
-      # combination at once (e.g. new package version AND delete an
-      # image in the same call), matching what their internal tool
-      # actually does today.
-      runCreateRelease:
-        type: boolean
+      # workflow_dispatch allows at most 10 inputs (confirmed by a live
+      # schema-validation error) — four separate booleans pushed us over
+      # that ceiling, so this is one comma-separated string instead,
+      # checked with contains(). Any combination of the four action
+      # codes can appear at once, e.g. "CREATE_RELEASE,DELETE_IMAGE" —
+      # matches what their internal tool actually does today. Also
+      # scales better: adding a fifth action type later costs zero
+      # extra inputs.
+      actions:
+        type: string
         required: false
-        default: false
-      runDeleteImage:
-        type: boolean
-        required: false
-        default: false
-      runBulkUpdate:
-        type: boolean
-        required: false
-        default: false
-      runOsTypeAccess:
-        type: boolean
-        required: false
-        default: false
+        default: ""
+        description: >
+          Comma-separated list of requested actions, any combination of:
+          CREATE_RELEASE, DELETE_IMAGE, BULK_UPDATE, OS_TYPE_ACCESS
       osTypeId:
         type: string
         required: true
@@ -136,14 +130,14 @@ jobs:
         uses: docker://bash:5
         shell: bash
         run: |
-          echo "Requested actions: createRelease=${{ inputs.runCreateRelease }} deleteImage=${{ inputs.runDeleteImage }} bulkUpdate=${{ inputs.runBulkUpdate }} osTypeAccess=${{ inputs.runOsTypeAccess }}"
+          echo "Requested actions: ${{ inputs.actions }}"
           echo "Release: ${{ inputs.releaseName }} (#${{ inputs.releaseNumberId }})"
           echo "OS type: ${{ inputs.osTypeName }} (${{ inputs.osTypeId }})"
 
   # ---- Conditional stage: only runs for CREATE_RELEASE ----
   create-release:
     needs: [request-received]
-    if: ${{ inputs.runCreateRelease == 'true' }}
+    if: ${{ contains(inputs.actions, 'CREATE_RELEASE') }}
     steps:
       - name: Create release record
         uses: docker://bash:5
@@ -174,7 +168,7 @@ jobs:
   # ---- Conditional stage: only runs for DELETE_IMAGE ----
   delete-image:
     needs: [request-received]
-    if: ${{ inputs.runDeleteImage == 'true' }}
+    if: ${{ contains(inputs.actions, 'DELETE_IMAGE') }}
     steps:
       - name: Deploy to GKE — delete image ConfigMap(s)
         uses: docker://google/cloud-sdk:slim
@@ -205,7 +199,7 @@ jobs:
   # ---- Conditional stage: only runs for BULK_UPDATE ----
   bulk-update:
     needs: [request-received]
-    if: ${{ inputs.runBulkUpdate == 'true' }}
+    if: ${{ contains(inputs.actions, 'BULK_UPDATE') }}
     steps:
       - name: Deploy to GKE — label images as bulk-updated
         uses: docker://google/cloud-sdk:slim
@@ -235,7 +229,7 @@ jobs:
   #      a (mocked) Slack-style notification. ----
   os-type-access-request:
     needs: [request-received]
-    if: ${{ inputs.runOsTypeAccess == 'true' }}
+    if: ${{ contains(inputs.actions, 'OS_TYPE_ACCESS') }}
     outputs:
       needsApproval: ${{ steps.check-approval.outputs.needsApproval }}
     steps:
@@ -303,7 +297,7 @@ jobs:
   #      never needs a job that the Admin path might have skipped. ----
   os-type-access-grant-standard:
     needs: [os-type-access-request]
-    if: ${{ inputs.runOsTypeAccess == 'true' && inputs.accessLevel != 'Admin' }}
+    if: ${{ contains(inputs.actions, 'OS_TYPE_ACCESS') && inputs.accessLevel != 'Admin' }}
     steps:
       - name: Deploy to GKE — record access request
         uses: docker://google/cloud-sdk:slim
@@ -332,7 +326,7 @@ jobs:
   #      reason the standard grant job above never needs the approval job. ----
   os-type-access-grant-admin:
     needs: [os-type-access-approval]
-    if: ${{ inputs.runOsTypeAccess == 'true' && inputs.accessLevel == 'Admin' }}
+    if: ${{ contains(inputs.actions, 'OS_TYPE_ACCESS') && inputs.accessLevel == 'Admin' }}
     steps:
       - name: Deploy to GKE — record approved access request
         uses: docker://google/cloud-sdk:slim
