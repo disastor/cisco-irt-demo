@@ -71,6 +71,17 @@ on:
       releaseName:
         type: string
         required: true
+      accessLevel:
+        type: choice
+        required: false
+        default: Read
+        description: >
+          Only meaningful for OS_TYPE_ACCESS requests — gates whether the
+          manual approval job runs.
+        options:
+          - Read
+          - Publish
+          - Admin
       payload:
         type: string
         required: false
@@ -197,8 +208,10 @@ jobs:
           echo "Current image labels:"
           kubectl get configmaps -n irt-demo --show-labels
 
-  # ---- Conditional stage: only runs for OS_TYPE_ACCESS ----
-  os-type-access:
+  # ---- Conditional stage: only runs for OS_TYPE_ACCESS. Always runs first,
+  #      regardless of requested access level — logs the request and sends
+  #      a (mocked) Slack-style notification. ----
+  os-type-access-request:
     needs: [request-received]
     if: ${{ inputs.cdroEvent == 'OS_TYPE_ACCESS' }}
     steps:
@@ -209,6 +222,46 @@ jobs:
           echo "Payload: ${{ inputs.payload }}"
           echo "Routing OS type access request for approval..."
 
+      - name: Notify (mocked Slack message)
+        uses: docker://bash:5
+        shell: bash
+        run: |
+          echo "---- Mock Slack notification (not a real integration) ----"
+          if [ "${{ inputs.accessLevel }}" = "Admin" ]; then
+            echo "#access-approvals"
+            echo "🔐 Admin access requested by ${{ inputs.userId }} — approval required before this is granted."
+          else
+            echo "#access-requests"
+            echo "✅ ${{ inputs.accessLevel }} access auto-granted to ${{ inputs.userId }} — no approval required at this level."
+          fi
+          echo "-----------------------------------------------------------"
+
+  # ---- Manual approval gate: only inserted when Admin access is requested.
+  #      Real CloudBees Unify manual-approval job — approvers default to
+  #      whoever holds the "Approver" role since none are listed explicitly.
+  #      disallowLaunchByUser prevents the requester from approving their
+  #      own request — the same separation-of-duties pattern IRT's own
+  #      Guest/OS-type approvals rely on. ----
+  os-type-access-approval:
+    needs: [os-type-access-request]
+    if: ${{ inputs.cdroEvent == 'OS_TYPE_ACCESS' && inputs.accessLevel == 'Admin' }}
+    with:
+      instructions: >
+        User ${{ inputs.userId }} is requesting Admin-level OS type access
+        for ${{ inputs.osTypeName }}. Review and approve or reject.
+      disallowLaunchByUser: true
+      approvalInputs: |
+        approverComments:
+          type: string
+    timeout-minutes: 4320
+    delegates: cloudbees-io/manual-approval/custom-job.yml@v1
+
+  # ---- Grants access immediately — only for non-Admin requests, so this
+  #      never needs a job that the Admin path might have skipped. ----
+  os-type-access-grant-standard:
+    needs: [os-type-access-request]
+    if: ${{ inputs.cdroEvent == 'OS_TYPE_ACCESS' && inputs.accessLevel != 'Admin' }}
+    steps:
       - name: Deploy to GKE — record access request
         uses: docker://google/cloud-sdk:slim
         shell: bash
@@ -225,6 +278,39 @@ jobs:
           kubectl create configmap "access-request-${{ inputs.userId }}" \
             -n irt-demo \
             --from-literal=requestedBy="${{ inputs.userId }}" \
+            --from-literal=accessLevel="${{ inputs.accessLevel }}" \
+            --from-literal=approvalRequired="false" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl get configmaps -n irt-demo -l '!fileName'
+
+  # ---- Grants access only after the approval job above completes — never
+  #      needs a job the standard path might have skipped, for the same
+  #      reason the standard grant job above never needs the approval job. ----
+  os-type-access-grant-admin:
+    needs: [os-type-access-approval]
+    if: ${{ inputs.cdroEvent == 'OS_TYPE_ACCESS' && inputs.accessLevel == 'Admin' }}
+    steps:
+      - name: Deploy to GKE — record approved access request
+        uses: docker://google/cloud-sdk:slim
+        shell: bash
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          set -e
+          echo "$GCP_SA_KEY" > /tmp/key.json
+          gcloud auth activate-service-account --key-file=/tmp/key.json --quiet
+          gcloud config set project ${{ env.GCP_PROJECT_ID }} --quiet
+          apt-get update -qq && apt-get install -y -qq google-cloud-cli-gke-gcloud-auth-plugin kubectl
+          gcloud container clusters get-credentials ${{ env.GCP_CLUSTER }} --zone ${{ env.GCP_ZONE }} --quiet
+
+          echo "Approver comments: ${{ fromJSON(needs.os-type-access-approval.outputs.approvalInputValues).approverComments }}"
+
+          kubectl create configmap "access-request-${{ inputs.userId }}" \
+            -n irt-demo \
+            --from-literal=requestedBy="${{ inputs.userId }}" \
+            --from-literal=accessLevel="Admin" \
+            --from-literal=approvalRequired="true" \
             --dry-run=client -o yaml | kubectl apply -f -
 
           kubectl get configmaps -n irt-demo -l '!fileName'
