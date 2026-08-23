@@ -7,18 +7,30 @@
 #   2. Payload is processed through a series of jobs (the "pipeline stages").
 #   3. Payload content (cdroEvent) decides which stage(s) run and which are
 #      skipped, via native `if:` conditionals.
-#   4. Output is a (mocked) deployment step — swap the deploy job's steps for
-#      a real `kubectl apply` once you have a target cluster / Edge Runner
-#      wired up.
+#   4. Output is a (mocked) deployment step — swap the mocked step for a real
+#      `kubectl apply` once you have a target cluster / Edge Runner wired up.
 #
-# Corrections applied against docs.cloudbees.com workflow/jobs/steps syntax
-# references:
-#   - apiVersion/kind/name are required workflow metadata (were missing).
+# Corrections applied against docs.cloudbees.com + a live run on a real
+# Unify org:
+#   - apiVersion/kind/name are required workflow metadata.
 #   - Every `if:` expression must be wrapped in ${{ }}.
 #   - workflow_dispatch input `type` only supports string, boolean, choice —
 #     no `number` — so osTypeId/releaseNumberId are declared as string.
 #   - Every step with a `run:` also needs `uses: docker://<image>` + `shell:`
 #     — CloudBees Unify has no implicit "run on the runner OS" step.
+#   - IMPORTANT: this runtime's actual supported expression functions
+#     (confirmed by a live error message) are: cloudbees, contains,
+#     endsWith, format, fromJSON, hashFiles, inputs, job, join, needs,
+#     secrets, startsWith, toJSON, vars — NOT success()/failure()/
+#     cancelled()/always(), despite those being listed in the docs'
+#     workflow syntax reference. That rules out a single fan-in "deploy"
+#     job that needs all four conditional jobs (a job that needs a
+#     skipped job won't run, and there's no documented override here).
+#     Fix: the mocked deploy step is folded into the end of each
+#     conditional job instead of a separate converging job. Only one
+#     conditional job runs per request, so exactly one deploy still
+#     happens per run — this sidesteps the gap entirely rather than
+#     working around it.
 
 apiVersion: automation.cloudbees.io/v1alpha1
 kind: workflow
@@ -88,7 +100,7 @@ jobs:
           echo "Release: ${{ inputs.releaseName }} (#${{ inputs.releaseNumberId }})"
           echo "OS type: ${{ inputs.osTypeName }} (${{ inputs.osTypeId }})"
 
-  # ---- Conditional stage: only runs for CREATE_RELEASE ----
+  # ---- Conditional stage: only runs for CREATE_RELEASE. Deploy folded in. ----
   create-release:
     needs: [request-received]
     if: ${{ inputs.cdroEvent == 'CREATE_RELEASE' }}
@@ -97,8 +109,15 @@ jobs:
         uses: docker://bash:5
         shell: bash
         run: echo "Creating release ${{ inputs.releaseName }}..."
+      - name: Deploy (mocked)
+        uses: docker://bash:5
+        shell: bash
+        run: |
+          echo "Deploying result of CREATE_RELEASE to demo-cluster..."
+          sleep 2
+          echo "Deployment successful."
 
-  # ---- Conditional stage: only runs for DELETE_IMAGE ----
+  # ---- Conditional stage: only runs for DELETE_IMAGE. Deploy folded in. ----
   delete-image:
     needs: [request-received]
     if: ${{ inputs.cdroEvent == 'DELETE_IMAGE' }}
@@ -109,8 +128,15 @@ jobs:
         run: |
           echo "Payload: ${{ inputs.payload }}"
           echo "Deleting image(s) referenced in payload..."
+      - name: Deploy (mocked)
+        uses: docker://bash:5
+        shell: bash
+        run: |
+          echo "Deploying result of DELETE_IMAGE to demo-cluster..."
+          sleep 2
+          echo "Deployment successful."
 
-  # ---- Conditional stage: only runs for BULK_UPDATE ----
+  # ---- Conditional stage: only runs for BULK_UPDATE. Deploy folded in. ----
   bulk-update:
     needs: [request-received]
     if: ${{ inputs.cdroEvent == 'BULK_UPDATE' }}
@@ -121,8 +147,15 @@ jobs:
         run: |
           echo "Payload: ${{ inputs.payload }}"
           echo "Applying bulk update across referenced images..."
+      - name: Deploy (mocked)
+        uses: docker://bash:5
+        shell: bash
+        run: |
+          echo "Deploying result of BULK_UPDATE to demo-cluster..."
+          sleep 2
+          echo "Deployment successful."
 
-  # ---- Conditional stage: only runs for OS_TYPE_ACCESS ----
+  # ---- Conditional stage: only runs for OS_TYPE_ACCESS. Deploy folded in. ----
   os-type-access:
     needs: [request-received]
     if: ${{ inputs.cdroEvent == 'OS_TYPE_ACCESS' }}
@@ -133,22 +166,16 @@ jobs:
         run: |
           echo "Payload: ${{ inputs.payload }}"
           echo "Routing OS type access request for approval..."
-
-  # ---- Always runs last, regardless of which stage above ran/was skipped ----
-  deploy:
-    needs: [create-release, delete-image, bulk-update, os-type-access]
-    if: ${{ always() }}
-    steps:
       - name: Deploy (mocked)
         uses: docker://bash:5
         shell: bash
         run: |
-          echo "Deploying result of '${{ inputs.cdroEvent }}' to demo-cluster..."
+          echo "Deploying result of OS_TYPE_ACCESS to demo-cluster..."
           sleep 2
           echo "Deployment successful."
 
-      # --- Swap the mock step above for something like this once a real
-      #     cluster / Edge Runner is available for the live demo: ---
+      # --- Swap any "Deploy (mocked)" step above for something like this
+      #     once a real cluster / Edge Runner is available: ---
       # - name: Deploy to Kubernetes
       #   uses: https://github.com/cloudbees-io/kubectl-deploy@v1
       #   with:
