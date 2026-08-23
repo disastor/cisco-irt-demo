@@ -324,7 +324,7 @@ jobs:
           apt-get update -qq && apt-get install -y -qq google-cloud-cli-gke-gcloud-auth-plugin kubectl
           gcloud container clusters get-credentials ${{ env.GCP_CLUSTER }} --zone ${{ env.GCP_ZONE }} --quiet
 
-          echo "Approver comments: ${{ fromJSON(needs.os-type-access-approval.outputs.approvalInputValues).approverComments }}"
+          echo "Approval details (raw): ${{ needs.os-type-access-approval.outputs.approvalInputValues }}"
 
           kubectl create configmap "access-request-${{ inputs.userId }}" \
             -n irt-demo \
