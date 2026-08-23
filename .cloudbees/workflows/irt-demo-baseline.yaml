@@ -248,9 +248,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ inputs.accessLevel }}" = "Admin" ]; then
-            echo "needsApproval=true" >> $CLOUDBEES_OUTPUTS
+            echo "true" > "$CLOUDBEES_OUTPUTS/needsApproval"
           else
-            echo "needsApproval=false" >> $CLOUDBEES_OUTPUTS
+            echo "false" > "$CLOUDBEES_OUTPUTS/needsApproval"
           fi
 
   # ---- Manual approval gate: only inserted when Admin access is requested.
