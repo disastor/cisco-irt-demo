@@ -247,6 +247,7 @@ jobs:
         uses: docker://bash:5
         shell: bash
         run: |
+          echo "Received accessLevel: '${{ inputs.accessLevel }}'"
           if [ "${{ inputs.accessLevel }}" = "Admin" ]; then
             echo "true" > "$CLOUDBEES_OUTPUTS/needsApproval"
           else
