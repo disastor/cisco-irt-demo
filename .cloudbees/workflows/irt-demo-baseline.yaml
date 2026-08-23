@@ -15,6 +15,9 @@
 # discovery call. Confirm exact CloudBees Unify expression syntax (e.g. the
 # `always()` function used on the deploy job) against current docs before
 # running this live — it has not been executed against a live Unify org.
+apiVersion: automation.cloudbees.io/v1alpha1
+kind: workflow
+name: build
 
 on:
   workflow_dispatch:
