@@ -7,10 +7,12 @@
 #   2. Payload is processed through a series of jobs (the "pipeline stages").
 #   3. Payload content (cdroEvent) decides which stage(s) run and which are
 #      skipped, via native `if:` conditionals.
-#   4. Output is a (mocked) deployment step — swap the mocked step for a real
-#      `kubectl apply` once you have a target cluster / Edge Runner wired up.
+#   4. Output is a REAL deployment step against a GKE cluster — see
+#      gcp-setup.md for how to provision the cluster and secret this
+#      workflow depends on. Each job talks to Kubernetes directly via
+#      kubectl, authenticated as a GCP service account stored as a secret.
 #
-# Corrections applied against docs.cloudbees.com + a live run on a real
+# Corrections applied against docs.cloudbees.com + live runs on a real
 # Unify org:
 #   - apiVersion/kind/name are required workflow metadata.
 #   - Every `if:` expression must be wrapped in ${{ }}.
@@ -18,23 +20,28 @@
 #     no `number` — so osTypeId/releaseNumberId are declared as string.
 #   - Every step with a `run:` also needs `uses: docker://<image>` + `shell:`
 #     — CloudBees Unify has no implicit "run on the runner OS" step.
-#   - IMPORTANT: this runtime's actual supported expression functions
-#     (confirmed by a live error message) are: cloudbees, contains,
-#     endsWith, format, fromJSON, hashFiles, inputs, job, join, needs,
-#     secrets, startsWith, toJSON, vars — NOT success()/failure()/
-#     cancelled()/always(), despite those being listed in the docs'
-#     workflow syntax reference. That rules out a single fan-in "deploy"
-#     job that needs all four conditional jobs (a job that needs a
-#     skipped job won't run, and there's no documented override here).
-#     Fix: the mocked deploy step is folded into the end of each
-#     conditional job instead of a separate converging job. Only one
-#     conditional job runs per request, so exactly one deploy still
-#     happens per run — this sidesteps the gap entirely rather than
-#     working around it.
+#   - This runtime's actual supported expression functions (confirmed by a
+#     live error) are: cloudbees, contains, endsWith, format, fromJSON,
+#     hashFiles, inputs, job, join, needs, secrets, startsWith, toJSON,
+#     vars — NOT success()/failure()/cancelled()/always(), despite those
+#     being documented. That rules out a single fan-in "deploy" job that
+#     needs all four conditional jobs. Fix: the deploy step lives at the
+#     end of each conditional job instead of a separate converging job.
+#
+# PREREQUISITES (see gcp-setup.md):
+#   - A GKE cluster named per GCP_CLUSTER below, with an `irt-demo`
+#     namespace seeded with a few `image-<id>` ConfigMaps.
+#   - A GCP service account key stored as the Unify secret `GCP_SA_KEY`,
+#     scoped to roles/container.developer on that cluster's project.
 
 apiVersion: automation.cloudbees.io/v1alpha1
 kind: workflow
 name: IRT demo baseline
+
+env:
+  GCP_PROJECT_ID: 'cb-thunder-v2'
+  GCP_CLUSTER: 'disastor-cluster'
+  GCP_ZONE: 'us-central1-a'
 
 on:
   workflow_dispatch:
@@ -100,7 +107,7 @@ jobs:
           echo "Release: ${{ inputs.releaseName }} (#${{ inputs.releaseNumberId }})"
           echo "OS type: ${{ inputs.osTypeName }} (${{ inputs.osTypeId }})"
 
-  # ---- Conditional stage: only runs for CREATE_RELEASE. Deploy folded in. ----
+  # ---- Conditional stage: only runs for CREATE_RELEASE ----
   create-release:
     needs: [request-received]
     if: ${{ inputs.cdroEvent == 'CREATE_RELEASE' }}
@@ -109,53 +116,90 @@ jobs:
         uses: docker://bash:5
         shell: bash
         run: echo "Creating release ${{ inputs.releaseName }}..."
-      - name: Deploy (mocked)
-        uses: docker://bash:5
-        shell: bash
-        run: |
-          echo "Deploying result of CREATE_RELEASE to demo-cluster..."
-          sleep 2
-          echo "Deployment successful."
 
-  # ---- Conditional stage: only runs for DELETE_IMAGE. Deploy folded in. ----
+      - name: Deploy to GKE — create release ConfigMap
+        uses: docker://google/cloud-sdk:slim
+        shell: bash
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          set -e
+          echo "$GCP_SA_KEY" > /tmp/key.json
+          gcloud auth activate-service-account --key-file=/tmp/key.json --quiet
+          gcloud config set project ${{ env.GCP_PROJECT_ID }} --quiet
+          gcloud components install gke-gcloud-auth-plugin --quiet
+          gcloud container clusters get-credentials ${{ env.GCP_CLUSTER }} --zone ${{ env.GCP_ZONE }} --quiet
+
+          kubectl create configmap "release-${{ inputs.releaseNumberId }}" \
+            -n irt-demo \
+            --from-literal=releaseName="${{ inputs.releaseName }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          echo "Current releases in cluster:"
+          kubectl get configmaps -n irt-demo -l '!fileName'
+
+  # ---- Conditional stage: only runs for DELETE_IMAGE ----
   delete-image:
     needs: [request-received]
     if: ${{ inputs.cdroEvent == 'DELETE_IMAGE' }}
     steps:
-      - name: Parse and delete images
-        uses: docker://bash:5
+      - name: Deploy to GKE — delete image ConfigMap(s)
+        uses: docker://google/cloud-sdk:slim
         shell: bash
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
         run: |
-          echo "Payload: ${{ inputs.payload }}"
-          echo "Deleting image(s) referenced in payload..."
-      - name: Deploy (mocked)
-        uses: docker://bash:5
-        shell: bash
-        run: |
-          echo "Deploying result of DELETE_IMAGE to demo-cluster..."
-          sleep 2
-          echo "Deployment successful."
+          set -e
+          echo "$GCP_SA_KEY" > /tmp/key.json
+          gcloud auth activate-service-account --key-file=/tmp/key.json --quiet
+          gcloud config set project ${{ env.GCP_PROJECT_ID }} --quiet
+          gcloud components install gke-gcloud-auth-plugin --quiet
+          gcloud container clusters get-credentials ${{ env.GCP_CLUSTER }} --zone ${{ env.GCP_ZONE }} --quiet
+          command -v jq >/dev/null || (apt-get update -qq && apt-get install -y -qq jq)
 
-  # ---- Conditional stage: only runs for BULK_UPDATE. Deploy folded in. ----
+          echo '${{ inputs.payload }}' > /tmp/payload.json
+
+          echo "Before deletion:"
+          kubectl get configmaps -n irt-demo
+
+          for image_id in $(jq -r '.deleteImage.images | keys[]' /tmp/payload.json); do
+            echo "Deleting image ${image_id}..."
+            kubectl delete configmap "image-${image_id}" -n irt-demo --ignore-not-found
+          done
+
+          echo "After deletion:"
+          kubectl get configmaps -n irt-demo
+
+  # ---- Conditional stage: only runs for BULK_UPDATE ----
   bulk-update:
     needs: [request-received]
     if: ${{ inputs.cdroEvent == 'BULK_UPDATE' }}
     steps:
-      - name: Apply bulk update
-        uses: docker://bash:5
+      - name: Deploy to GKE — label images as bulk-updated
+        uses: docker://google/cloud-sdk:slim
         shell: bash
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
         run: |
-          echo "Payload: ${{ inputs.payload }}"
-          echo "Applying bulk update across referenced images..."
-      - name: Deploy (mocked)
-        uses: docker://bash:5
-        shell: bash
-        run: |
-          echo "Deploying result of BULK_UPDATE to demo-cluster..."
-          sleep 2
-          echo "Deployment successful."
+          set -e
+          echo "$GCP_SA_KEY" > /tmp/key.json
+          gcloud auth activate-service-account --key-file=/tmp/key.json --quiet
+          gcloud config set project ${{ env.GCP_PROJECT_ID }} --quiet
+          gcloud components install gke-gcloud-auth-plugin --quiet
+          gcloud container clusters get-credentials ${{ env.GCP_CLUSTER }} --zone ${{ env.GCP_ZONE }} --quiet
+          command -v jq >/dev/null || (apt-get update -qq && apt-get install -y -qq jq)
 
-  # ---- Conditional stage: only runs for OS_TYPE_ACCESS. Deploy folded in. ----
+          echo '${{ inputs.payload }}' > /tmp/payload.json
+
+          for image_id in $(jq -r '.bulkUpdate.imageIds[]' /tmp/payload.json); do
+            echo "Labeling image ${image_id} as bulk-updated..."
+            kubectl label configmap "image-${image_id}" -n irt-demo bulk-updated=true --overwrite
+          done
+
+          echo "Current image labels:"
+          kubectl get configmaps -n irt-demo --show-labels
+
+  # ---- Conditional stage: only runs for OS_TYPE_ACCESS ----
   os-type-access:
     needs: [request-received]
     if: ${{ inputs.cdroEvent == 'OS_TYPE_ACCESS' }}
@@ -166,19 +210,23 @@ jobs:
         run: |
           echo "Payload: ${{ inputs.payload }}"
           echo "Routing OS type access request for approval..."
-      - name: Deploy (mocked)
-        uses: docker://bash:5
-        shell: bash
-        run: |
-          echo "Deploying result of OS_TYPE_ACCESS to demo-cluster..."
-          sleep 2
-          echo "Deployment successful."
 
-      # --- Swap any "Deploy (mocked)" step above for something like this
-      #     once a real cluster / Edge Runner is available: ---
-      # - name: Deploy to Kubernetes
-      #   uses: https://github.com/cloudbees-io/kubectl-deploy@v1
-      #   with:
-      #     cluster: demo-cluster
-      #     namespace: irt-demo
-      #     manifest: ./k8s/demo-configmap.yaml
+      - name: Deploy to GKE — record access request
+        uses: docker://google/cloud-sdk:slim
+        shell: bash
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          set -e
+          echo "$GCP_SA_KEY" > /tmp/key.json
+          gcloud auth activate-service-account --key-file=/tmp/key.json --quiet
+          gcloud config set project ${{ env.GCP_PROJECT_ID }} --quiet
+          gcloud components install gke-gcloud-auth-plugin --quiet
+          gcloud container clusters get-credentials ${{ env.GCP_CLUSTER }} --zone ${{ env.GCP_ZONE }} --quiet
+
+          kubectl create configmap "access-request-${{ inputs.userId }}" \
+            -n irt-demo \
+            --from-literal=requestedBy="${{ inputs.userId }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl get configmaps -n irt-demo -l '!fileName'
