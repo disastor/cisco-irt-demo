@@ -1,0 +1,135 @@
+# irt-demo-baseline.yaml
+#
+# Baseline demo workflow for the "reverse demo" 1-hour session.
+# Mirrors the foundational IRT pattern Abhiram asked to see:
+#   1. Input arrives via webhook (workflow_dispatch, triggered by curl or the
+#      mock Release Ops Console).
+#   2. Payload is processed through a series of jobs (the "pipeline stages").
+#   3. Payload content (cdroEvent) decides which stage(s) run and which are
+#      skipped, via native `if:` conditionals.
+#   4. Output is a (mocked) deployment step — swap the deploy job's steps for
+#      a real `kubectl apply` once you have a target cluster / Edge Runner
+#      wired up.
+#
+# NOTE: field/type names below are illustrative placeholders based on the
+# discovery call. Confirm exact CloudBees Unify expression syntax (e.g. the
+# `always()` function used on the deploy job) against current docs before
+# running this live — it has not been executed against a live Unify org.
+
+on:
+  workflow_dispatch:
+    inputs:
+      userId:
+        type: string
+        required: true
+        description: Requesting user's ID
+      cdroEvent:
+        type: choice
+        required: true
+        description: Which operation this request represents
+        options:
+          - CREATE_RELEASE
+          - DELETE_IMAGE
+          - BULK_UPDATE
+          - OS_TYPE_ACCESS
+      osTypeId:
+        type: number
+        required: true
+      osTypeName:
+        type: string
+        required: true
+      releaseNumberId:
+        type: number
+        required: true
+      releaseName:
+        type: string
+        required: true
+      payload:
+        type: string
+        required: false
+        description: >
+          Raw JSON string carrying event-specific fields (e.g. the
+          deleteImage.images map, bulkUpdate.imageIds list, or
+          osTypeAccess request details). Parsed inside the job that needs it.
+
+jobs:
+
+  # ---- Always runs: stands in for IRT's role/authorization check ----
+  auth-check:
+    steps:
+      - name: Validate user role
+        run: |
+          echo "Checking authorization for user '${{ inputs.userId }}'..."
+          # In the real integration this calls Cisco's existing role
+          # microservice (the same one CD/RO calls today) instead of
+          # a hardcoded pass. Fail the job here to fail the whole run,
+          # exactly like CD/RO does at its Request stage today.
+          echo "Authorized."
+
+  # ---- Always runs: logs the incoming request for traceability ----
+  request-received:
+    needs: [auth-check]
+    steps:
+      - name: Log request
+        run: |
+          echo "Event: ${{ inputs.cdroEvent }}"
+          echo "Release: ${{ inputs.releaseName }} (#${{ inputs.releaseNumberId }})"
+          echo "OS type: ${{ inputs.osTypeName }} (${{ inputs.osTypeId }})"
+
+  # ---- Conditional stage: only runs for CREATE_RELEASE ----
+  create-release:
+    needs: [request-received]
+    if: inputs.cdroEvent == 'CREATE_RELEASE'
+    steps:
+      - name: Create release record
+        run: echo "Creating release ${{ inputs.releaseName }}..."
+
+  # ---- Conditional stage: only runs for DELETE_IMAGE ----
+  delete-image:
+    needs: [request-received]
+    if: inputs.cdroEvent == 'DELETE_IMAGE'
+    steps:
+      - name: Parse and delete images
+        run: |
+          echo "Payload: ${{ inputs.payload }}"
+          echo "Deleting image(s) referenced in payload..."
+
+  # ---- Conditional stage: only runs for BULK_UPDATE ----
+  bulk-update:
+    needs: [request-received]
+    if: inputs.cdroEvent == 'BULK_UPDATE'
+    steps:
+      - name: Apply bulk update
+        run: |
+          echo "Payload: ${{ inputs.payload }}"
+          echo "Applying bulk update across referenced images..."
+
+  # ---- Conditional stage: only runs for OS_TYPE_ACCESS ----
+  os-type-access:
+    needs: [request-received]
+    if: inputs.cdroEvent == 'OS_TYPE_ACCESS'
+    steps:
+      - name: Route access request
+        run: |
+          echo "Payload: ${{ inputs.payload }}"
+          echo "Routing OS type access request for approval..."
+
+  # ---- Always runs last, regardless of which stage above ran/was skipped ----
+  deploy:
+    needs: [create-release, delete-image, bulk-update, os-type-access]
+    if: always()   # <-- confirm this expression against current Unify docs
+    steps:
+      - name: Deploy (mocked)
+        run: |
+          echo "Deploying result of '${{ inputs.cdroEvent }}' to demo-cluster..."
+          sleep 2
+          echo "Deployment successful."
+
+      # --- Swap the mock step above for something like this once a real
+      #     cluster / Edge Runner is available for the live demo: ---
+      # - name: Deploy to Kubernetes
+      #   uses: https://github.com/cloudbees-io/kubectl-deploy@v1
+      #   with:
+      #     cluster: demo-cluster
+      #     namespace: irt-demo
+      #     manifest: ./k8s/demo-configmap.yaml
