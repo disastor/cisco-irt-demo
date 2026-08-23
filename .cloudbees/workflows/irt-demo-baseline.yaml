@@ -214,6 +214,8 @@ jobs:
   os-type-access-request:
     needs: [request-received]
     if: ${{ inputs.cdroEvent == 'OS_TYPE_ACCESS' }}
+    outputs:
+      needsApproval: ${{ steps.check-approval.outputs.needsApproval }}
     steps:
       - name: Route access request
         uses: docker://bash:5
@@ -236,19 +238,37 @@ jobs:
           fi
           echo "-----------------------------------------------------------"
 
+      # Computed here, in a normal job, because `inputs.*` is NOT available
+      # the same way inside a `delegates:` (custom job) like the manual
+      # approval job below — confirmed by a live error. Passing the
+      # decision forward as a job output sidesteps that entirely.
+      - id: check-approval
+        name: Determine whether approval is required
+        uses: docker://bash:5
+        shell: bash
+        run: |
+          if [ "${{ inputs.accessLevel }}" = "Admin" ]; then
+            echo "needsApproval=true" >> $CLOUDBEES_OUTPUTS
+          else
+            echo "needsApproval=false" >> $CLOUDBEES_OUTPUTS
+          fi
+
   # ---- Manual approval gate: only inserted when Admin access is requested.
   #      Real CloudBees Unify manual-approval job — approvers default to
   #      whoever holds the "Approver" role since none are listed explicitly.
   #      disallowLaunchByUser prevents the requester from approving their
   #      own request — the same separation-of-duties pattern IRT's own
-  #      Guest/OS-type approvals rely on. ----
+  #      Guest/OS-type approvals rely on.
+  #      NOTE: this job's `if:` reads needs.*.outputs, not inputs.* directly
+  #      — a delegates/custom job's own `inputs` context refers to its own
+  #      `with:` schema, not the workflow's top-level inputs. ----
   os-type-access-approval:
     needs: [os-type-access-request]
-    if: ${{ inputs.cdroEvent == 'OS_TYPE_ACCESS' && inputs.accessLevel == 'Admin' }}
+    if: ${{ needs.os-type-access-request.outputs.needsApproval == 'true' }}
     with:
       instructions: >
-        User ${{ inputs.userId }} is requesting Admin-level OS type access
-        for ${{ inputs.osTypeName }}. Review and approve or reject.
+        Reviewing an OS type access request. Check the run's inputs for the
+        requesting user and OS type — approve or reject below.
       disallowLaunchByUser: true
       approvalInputs: |
         approverComments:
