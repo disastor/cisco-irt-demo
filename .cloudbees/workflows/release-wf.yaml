@@ -150,7 +150,7 @@ jobs:
       ${{ contains(fromJSON(inputs.manifest).actions, 'OS_TYPE_ACCESS') &&
           fromJSON(inputs.manifest).osTypeAccess.accessLevel == 'Admin' }}
     environment: demo-cluster
-    uses: .cloudbees/workflows/deployer.yml
+    uses: .cloudbees/workflows/deployer.yaml
     secrets: inherit
     with:
       manifest: ${{ inputs.manifest }}
