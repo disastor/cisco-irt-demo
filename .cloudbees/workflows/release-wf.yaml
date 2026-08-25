@@ -65,7 +65,7 @@ jobs:
   Demo-Cluster:
     needs: Approve
     environment: demo-cluster
-    uses: .cloudbees/workflows/deployer.yml
+    uses: .cloudbees/workflows/deployer.yaml
     vars: inherit
     secrets: inherit
     with:
