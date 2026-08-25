@@ -1,22 +1,23 @@
-# deployer.yml
+# deployer.yaml
 #
-# Reusable (workflow_call) deployer, now handling all four baseline
-# actions instead of just release creation — this is the design-doc
-# "Option A" pattern (extract the GKE connect boilerplate once, branch
-# internally on what to do) applied for real, in new work rather than
-# a change to the proven baseline file.
+# Reusable (workflow_call) deployer, handling all four baseline actions
+# via one internal branch — the design-doc "Option A" pattern (extract
+# the GKE connect boilerplate once, branch internally on what to do).
+#
+# IMPORTANT: auth/connect and the actual kubectl action are combined
+# into ONE step, not two. Confirmed by a live failure: each step's
+# `uses: docker://` launches a fresh container — packages installed via
+# apt-get in one step (jq, kubectl, the auth plugin) do NOT persist into
+# a later step, even within the same job. The baseline workflow avoided
+# this by accident (everything was already one step per job); this file
+# hit it directly by splitting connect and action into two steps.
 #
 # Self-contained on GCP project/cluster/zone (same real values the
 # baseline workflow uses) rather than relying on `vars: inherit` from
-# the caller — same reasoning as the original version of this file.
-# `secrets: inherit` on the calling job is what actually matters here,
-# and reuses the same GCP_SA_KEY secret already set up for the baseline
-# workflow (secrets are scoped to the component, not to one workflow file).
-#
-# NOT YET RUN. The DELETE_IMAGE/BULK_UPDATE/OS_TYPE_ACCESS branches reuse
-# jq patterns already proven working in the baseline workflow, adapted
-# to read from a single `manifest` input instead of separate typed
-# inputs — same logic, different source.
+# the caller. `secrets: inherit` on the calling job is what actually
+# matters — reuses the same GCP_SA_KEY secret already set up for the
+# baseline workflow (secrets are scoped to the component, not to one
+# workflow file).
 
 apiVersion: automation.cloudbees.io/v1alpha1
 kind: workflow
@@ -46,7 +47,7 @@ jobs:
       GCP_CLUSTER: 'disastor-cluster'
       GCP_ZONE: 'us-central1-a'
     steps:
-      - name: Connect to GKE
+      - name: Connect to GKE and run the requested action
         uses: docker://google/cloud-sdk:slim
         shell: bash
         env:
@@ -58,10 +59,6 @@ jobs:
           apt-get update -qq && apt-get install -y -qq google-cloud-cli-gke-gcloud-auth-plugin kubectl jq
           gcloud container clusters get-credentials ${{ env.GCP_CLUSTER }} --zone ${{ env.GCP_ZONE }} --quiet
 
-      - name: Run the requested action
-        uses: docker://google/cloud-sdk:slim
-        shell: bash
-        run: |
           echo '${{ inputs.manifest }}' > /tmp/manifest.json
           echo "---- Raw manifest ----"
           cat -A /tmp/manifest.json
