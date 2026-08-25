@@ -1,15 +1,22 @@
 # deployer.yml
 #
-# Reusable (workflow_call) deployer, invoked by release-wf.yml's
-# Demo-Cluster stage job. Deliberately self-contained on the GCP
-# project/cluster/zone values rather than relying on `vars: inherit`
-# from the caller — I haven't confirmed exactly what `vars: inherit`
-# forwards for a workflow_call job, so this doesn't depend on it.
-# `secrets: inherit` on the calling job IS a documented mechanism
-# (workflow_call supports a `secrets:` block), so GCP_SA_KEY is
-# declared as a required secret here and actually relied on.
+# Reusable (workflow_call) deployer, now handling all four baseline
+# actions instead of just release creation — this is the design-doc
+# "Option A" pattern (extract the GKE connect boilerplate once, branch
+# internally on what to do) applied for real, in new work rather than
+# a change to the proven baseline file.
 #
-# NOT YET RUN — same caveat as release-wf.yml.
+# Self-contained on GCP project/cluster/zone (same real values the
+# baseline workflow uses) rather than relying on `vars: inherit` from
+# the caller — same reasoning as the original version of this file.
+# `secrets: inherit` on the calling job is what actually matters here,
+# and reuses the same GCP_SA_KEY secret already set up for the baseline
+# workflow (secrets are scoped to the component, not to one workflow file).
+#
+# NOT YET RUN. The DELETE_IMAGE/BULK_UPDATE/OS_TYPE_ACCESS branches reuse
+# jq patterns already proven working in the baseline workflow, adapted
+# to read from a single `manifest` input instead of separate typed
+# inputs — same logic, different source.
 
 apiVersion: automation.cloudbees.io/v1alpha1
 kind: workflow
@@ -24,6 +31,10 @@ on:
       environment:
         type: string
         required: true
+      action:
+        type: string
+        required: true
+        description: One of CREATE_RELEASE, DELETE_IMAGE, BULK_UPDATE, OS_TYPE_ACCESS
     secrets:
       GCP_SA_KEY:
         required: true
@@ -35,33 +46,72 @@ jobs:
       GCP_CLUSTER: 'disastor-cluster'
       GCP_ZONE: 'us-central1-a'
     steps:
-      - name: Deploy manifest to GKE
+      - name: Connect to GKE
         uses: docker://google/cloud-sdk:slim
         shell: bash
         env:
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
         run: |
-          set -e
           echo "$GCP_SA_KEY" > /tmp/key.json
           gcloud auth activate-service-account --key-file=/tmp/key.json --quiet
           gcloud config set project ${{ env.GCP_PROJECT_ID }} --quiet
           apt-get update -qq && apt-get install -y -qq google-cloud-cli-gke-gcloud-auth-plugin kubectl jq
           gcloud container clusters get-credentials ${{ env.GCP_CLUSTER }} --zone ${{ env.GCP_ZONE }} --quiet
 
+      - name: Run the requested action
+        uses: docker://google/cloud-sdk:slim
+        shell: bash
+        run: |
           echo '${{ inputs.manifest }}' > /tmp/manifest.json
-          echo "---- Raw contents of /tmp/manifest.json ----"
+          echo "---- Raw manifest ----"
           cat -A /tmp/manifest.json
-          echo "---------------------------------------------"
-          RELEASE_NAME=$(jq -r '.releaseName' /tmp/manifest.json)
-          RELEASE_VERSION=$(jq -r '.releaseVersion' /tmp/manifest.json)
+          echo "-----------------------"
 
-          echo "Deploying ${RELEASE_NAME} version ${RELEASE_VERSION} to environment: ${{ inputs.environment }}"
+          ACTION="${{ inputs.action }}"
+          echo "Action: ${ACTION}, environment: ${{ inputs.environment }}"
 
-          kubectl create configmap "staged-release-${RELEASE_NAME}" \
-            -n irt-demo \
-            --from-literal=version="${RELEASE_VERSION}" \
-            --from-literal=environment="${{ inputs.environment }}" \
-            --dry-run=client -o yaml | kubectl apply -f -
+          case "$ACTION" in
+            CREATE_RELEASE)
+              RELEASE_NAME=$(jq -r '.releaseName' /tmp/manifest.json)
+              RELEASE_VERSION=$(jq -r '.releaseVersion' /tmp/manifest.json)
+              echo "Creating release ${RELEASE_NAME} version ${RELEASE_VERSION}..."
+              kubectl create configmap "staged-release-${RELEASE_NAME}" \
+                -n irt-demo \
+                --from-literal=version="${RELEASE_VERSION}" \
+                --from-literal=environment="${{ inputs.environment }}" \
+                --dry-run=client -o yaml | kubectl apply -f -
+              ;;
 
-          echo "Current staged releases:"
-          kubectl get configmaps -n irt-demo -l '!fileName'
+            DELETE_IMAGE)
+              for image_id in $(jq -r '.deleteImage.images | keys[]' /tmp/manifest.json); do
+                echo "Deleting image ${image_id}..."
+                kubectl delete configmap "image-${image_id}" -n irt-demo --ignore-not-found
+              done
+              ;;
+
+            BULK_UPDATE)
+              for image_id in $(jq -r '.bulkUpdate.imageIds[]' /tmp/manifest.json); do
+                echo "Labeling image ${image_id} as bulk-updated..."
+                kubectl label configmap "image-${image_id}" -n irt-demo bulk-updated=true --overwrite
+              done
+              ;;
+
+            OS_TYPE_ACCESS)
+              USER_ID=$(jq -r '.userId' /tmp/manifest.json)
+              ACCESS_LEVEL=$(jq -r '.osTypeAccess.accessLevel' /tmp/manifest.json)
+              echo "Recording ${ACCESS_LEVEL} access request for ${USER_ID}..."
+              kubectl create configmap "access-request-${USER_ID}" \
+                -n irt-demo \
+                --from-literal=requestedBy="${USER_ID}" \
+                --from-literal=accessLevel="${ACCESS_LEVEL}" \
+                --dry-run=client -o yaml | kubectl apply -f -
+              ;;
+
+            *)
+              echo "Unknown action: ${ACTION}"
+              exit 1
+              ;;
+          esac
+
+          echo "Current cluster state:"
+          kubectl get configmaps -n irt-demo
