@@ -74,14 +74,33 @@ metadata:
 
 jobs:
 
-  # ---- Always runs: logs the incoming manifest ----
+  # ---- Always runs: logs the incoming manifest, and computes whether
+  #      GuestApproval needs to actually gate this run. Done here (a
+  #      normal job) rather than inside GuestApproval itself, because a
+  #      delegates/custom job's own `inputs` context refers to its own
+  #      `with:` schema, not the workflow's top-level inputs — confirmed
+  #      by a live error, same issue we hit in the baseline workflow. ----
   Request:
+    outputs:
+      needsApproval: ${{ steps.check-approval.outputs.needsApproval }}
     steps:
       - name: Log manifest received
         uses: docker://bash:5
         shell: bash
         run: |
           echo "Manifest received: ${{ inputs.manifest }}"
+
+      - id: check-approval
+        name: Determine whether approval is required
+        uses: docker://bash:5
+        shell: bash
+        run: |
+          MANIFEST='${{ inputs.manifest }}'
+          if echo "$MANIFEST" | grep -q 'OS_TYPE_ACCESS' && echo "$MANIFEST" | grep -q '"accessLevel"[[:space:]]*:[[:space:]]*"Admin"'; then
+            printf '%s' "true" > "$CLOUDBEES_OUTPUTS/needsApproval"
+          else
+            printf '%s' "false" > "$CLOUDBEES_OUTPUTS/needsApproval"
+          fi
 
   # ---- Only runs if actions includes CREATE_RELEASE ----
   Release:
@@ -120,12 +139,15 @@ jobs:
       action: BULK_UPDATE
 
   # ---- Manual approval gate: only inserted for Admin-level OS Type
-  #      Access requests. Named to match Cisco's own real stage name. ----
+  #      Access requests. Named to match Cisco's own real stage name.
+  #      `if:` reads needs.Request.outputs, not inputs.manifest directly
+  #      — see the note on the Request job above for why. Request is
+  #      added to `needs:` alongside Images-BulkUpdate (which the stage-
+  #      sequencing rule requires) specifically so this output is
+  #      reachable. ----
   GuestApproval:
-    needs: [Images-BulkUpdate]
-    if: >-
-      ${{ contains(fromJSON(inputs.manifest).actions, 'OS_TYPE_ACCESS') &&
-          fromJSON(inputs.manifest).osTypeAccess.accessLevel == 'Admin' }}
+    needs: [Images-BulkUpdate, Request]
+    if: ${{ needs.Request.outputs.needsApproval == 'true' }}
     with:
       disallowLaunchByUser: false
       notifyAllEligibleUsers: false
