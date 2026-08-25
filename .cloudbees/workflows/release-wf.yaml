@@ -81,7 +81,7 @@ jobs:
     needs: [Request]
     if: ${{ contains(fromJSON(inputs.manifest).actions, 'CREATE_RELEASE') }}
     environment: demo-cluster
-    uses: .cloudbees/workflows/deployer.yml
+    uses: .cloudbees/workflows/deployer.yaml
     secrets: inherit
     with:
       manifest: ${{ inputs.manifest }}
@@ -93,7 +93,7 @@ jobs:
     needs: [Request]
     if: ${{ contains(fromJSON(inputs.manifest).actions, 'DELETE_IMAGE') }}
     environment: demo-cluster
-    uses: .cloudbees/workflows/deployer.yml
+    uses: .cloudbees/workflows/deployer.yaml
     secrets: inherit
     with:
       manifest: ${{ inputs.manifest }}
@@ -105,7 +105,7 @@ jobs:
     needs: [Request]
     if: ${{ contains(fromJSON(inputs.manifest).actions, 'BULK_UPDATE') }}
     environment: demo-cluster
-    uses: .cloudbees/workflows/deployer.yml
+    uses: .cloudbees/workflows/deployer.yaml
     secrets: inherit
     with:
       manifest: ${{ inputs.manifest }}
@@ -136,7 +136,7 @@ jobs:
       ${{ contains(fromJSON(inputs.manifest).actions, 'OS_TYPE_ACCESS') &&
           fromJSON(inputs.manifest).osTypeAccess.accessLevel != 'Admin' }}
     environment: demo-cluster
-    uses: .cloudbees/workflows/deployer.yml
+    uses: .cloudbees/workflows/deployer.yaml
     secrets: inherit
     with:
       manifest: ${{ inputs.manifest }}
