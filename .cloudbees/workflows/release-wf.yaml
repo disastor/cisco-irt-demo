@@ -1,28 +1,40 @@
 # release-wf.yml
 #
-# Staged-workflow counterpart to irt-demo-baseline.yaml — this is the more
-# literal "Release Orchestration" shape (stages, environments, a reusable
-# deployer workflow) as opposed to the CI-style webhook/if: pattern in the
-# baseline. Mirrors app-hpe-ngsm's release-wf.yml pattern almost exactly:
-# metadata: stages/v1alpha1 for the pipeline view, an Approve gate, then a
-# stage job that calls a separate deployer.yml.
+# Extended staged-workflow version of the baseline demo — same underlying
+# capability as irt-demo-baseline.yaml (multi-select actions, real GKE
+# deploy, admin approval gate), presented as a CD/RO-style staged
+# pipeline instead of a flat job list. Stage names deliberately borrow
+# from Cisco's own real CD/RO pipeline (Request, Release, Images-Deletion,
+# Images-BulkUpdate, GuestApproval) so the shape looks familiar.
 #
-# Deliberately ONE real stage — Demo-Cluster — same reasoning as the HPE
-# example: don't invent a DEV/STAGING/PROD progression that doesn't exist
-# yet. Add more stages the same way once there's a second real environment:
-# copy the Demo-Cluster job, point `environment:` at the new one, chain
-# `needs:` off this stage.
+# Multi-select works the same way as the baseline: `actions` is a
+# comma-separated field, this time embedded INSIDE the manifest JSON
+# (since a staged workflow only exposes one input, `manifest`) instead
+# of being its own top-level input.
 #
-# NOT YET RUN against a live Unify org. Built from the confirmed HPE
-# example plus the workflow_call + secrets syntax from CloudBees's
-# workflow-syntax-reference docs — treat the first run as a real test,
-# same as everything else built today. Two things flagged as unverified:
-#   - Whether `instructions:` is actually required on the Approve job —
-#     HPE's real example omits it despite the docs table marking it
-#     required. Left out here to match their working example; add it
-#     back if the run demands it.
-#   - `vars: inherit` — included to match the HPE pattern, but
-#     deployer.yml doesn't actually depend on it (see that file's notes).
+# NOT YET RUN. Two things flagged as genuinely new/untested here:
+#   - `if:` conditions chain fromJSON(inputs.manifest).actions — a
+#     function call followed by property access — which is a new
+#     combination we haven't tried before (everything so far has been
+#     either a plain input comparison or a single function call, not
+#     both chained together).
+#   - GuestApproval keeps disallowLaunchByUser: false (matching what
+#     already worked in this file, and HPE's own workshop convention)
+#     rather than the stricter `true` used in the baseline's OS Type
+#     Access gate. Flip to true if you want the same separation-of-duties
+#     story reinforced here too — just means you'll need a second
+#     approver account again, same tradeoff as before.
+#
+# Example manifest to paste into Unify's "New run" form:
+# {
+#   "actions": "CREATE_RELEASE,DELETE_IMAGE",
+#   "userId": "jdoe",
+#   "releaseName": "bulkcreate.1.1",
+#   "releaseVersion": "1.2",
+#   "deleteImage": { "images": { "3997398": "testPostingTypeChange5.bin" } },
+#   "bulkUpdate": { "imageIds": ["4001122", "4001987"] },
+#   "osTypeAccess": { "accessLevel": "Admin" }
+# }
 
 apiVersion: automation.cloudbees.io/v1alpha1
 kind: workflow
@@ -35,39 +47,112 @@ on:
         type: string
         required: true
         description: >
-          JSON manifest describing what to deploy, e.g.
-          {"releaseName": "bulkcreate", "releaseVersion": "1.2"}
+          JSON manifest describing what to deploy. See header comment
+          for the full example shape.
 
 metadata:
   stages/v1alpha1:
-    - name: Demo-Cluster
-      jobs:
-        - Approve
-        - Demo-Cluster
+    - name: Request
+      jobs: [Request]
+    - name: Release
+      jobs: [Release]
+    - name: Images-Deletion
+      jobs: [Images-Deletion]
+    - name: Images-BulkUpdate
+      jobs: [Images-BulkUpdate]
+    - name: GuestApproval
+      jobs: [GuestApproval]
+    - name: OS-Type-Access
+      jobs: [OSTypeAccess-Standard, OSTypeAccess-Admin]
 
 jobs:
-  Approve:
-    timeout-minutes: 4320
-    delegates: cloudbees-io/manual-approval/custom-job.yml@v1
+
+  # ---- Always runs: logs the incoming manifest ----
+  Request:
+    steps:
+      - name: Log manifest received
+        uses: docker://bash:5
+        shell: bash
+        run: |
+          echo "Manifest received: ${{ inputs.manifest }}"
+
+  # ---- Only runs if actions includes CREATE_RELEASE ----
+  Release:
+    needs: [Request]
+    if: ${{ contains(fromJSON(inputs.manifest).actions, 'CREATE_RELEASE') }}
+    environment: demo-cluster
+    uses: .cloudbees/workflows/deployer.yml
+    secrets: inherit
+    inputs:
+      manifest: ${{ inputs.manifest }}
+      environment: ${{ job.environment }}
+      action: CREATE_RELEASE
+
+  # ---- Only runs if actions includes DELETE_IMAGE ----
+  Images-Deletion:
+    needs: [Request]
+    if: ${{ contains(fromJSON(inputs.manifest).actions, 'DELETE_IMAGE') }}
+    environment: demo-cluster
+    uses: .cloudbees/workflows/deployer.yml
+    secrets: inherit
+    inputs:
+      manifest: ${{ inputs.manifest }}
+      environment: ${{ job.environment }}
+      action: DELETE_IMAGE
+
+  # ---- Only runs if actions includes BULK_UPDATE ----
+  Images-BulkUpdate:
+    needs: [Request]
+    if: ${{ contains(fromJSON(inputs.manifest).actions, 'BULK_UPDATE') }}
+    environment: demo-cluster
+    uses: .cloudbees/workflows/deployer.yml
+    secrets: inherit
+    inputs:
+      manifest: ${{ inputs.manifest }}
+      environment: ${{ job.environment }}
+      action: BULK_UPDATE
+
+  # ---- Manual approval gate: only inserted for Admin-level OS Type
+  #      Access requests. Named to match Cisco's own real stage name. ----
+  GuestApproval:
+    needs: [Request]
+    if: >-
+      ${{ contains(fromJSON(inputs.manifest).actions, 'OS_TYPE_ACCESS') &&
+          fromJSON(inputs.manifest).osTypeAccess.accessLevel == 'Admin' }}
     with:
-      # false = anyone can self-approve, so one person can drive the whole
-      # demo solo (same convention HPE's example uses on purpose). Flip to
-      # true for the real separation-of-duties story — same tradeoff as
-      # the OS Type Access approval in irt-demo-baseline.yaml, just
-      # decided the other way here for live-demo practicality.
       disallowLaunchByUser: false
       notifyAllEligibleUsers: false
       approvers: ""
       approvalInputs: |
         Comment:
           type: string
+    timeout-minutes: 4320
+    delegates: cloudbees-io/manual-approval/custom-job.yml@v1
 
-  Demo-Cluster:
-    needs: Approve
+  # ---- Grants access immediately for non-Admin requests ----
+  OSTypeAccess-Standard:
+    needs: [Request]
+    if: >-
+      ${{ contains(fromJSON(inputs.manifest).actions, 'OS_TYPE_ACCESS') &&
+          fromJSON(inputs.manifest).osTypeAccess.accessLevel != 'Admin' }}
     environment: demo-cluster
-    uses: .cloudbees/workflows/deployer.yaml
-    vars: inherit
+    uses: .cloudbees/workflows/deployer.yml
     secrets: inherit
-    with:
+    inputs:
       manifest: ${{ inputs.manifest }}
       environment: ${{ job.environment }}
+      action: OS_TYPE_ACCESS
+
+  # ---- Grants access only after GuestApproval completes ----
+  OSTypeAccess-Admin:
+    needs: [GuestApproval]
+    if: >-
+      ${{ contains(fromJSON(inputs.manifest).actions, 'OS_TYPE_ACCESS') &&
+          fromJSON(inputs.manifest).osTypeAccess.accessLevel == 'Admin' }}
+    environment: demo-cluster
+    uses: .cloudbees/workflows/deployer.yml
+    secrets: inherit
+    inputs:
+      manifest: ${{ inputs.manifest }}
+      environment: ${{ job.environment }}
+      action: OS_TYPE_ACCESS
