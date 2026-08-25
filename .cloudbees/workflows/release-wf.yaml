@@ -83,7 +83,7 @@ jobs:
     environment: demo-cluster
     uses: .cloudbees/workflows/deployer.yml
     secrets: inherit
-    inputs:
+    with:
       manifest: ${{ inputs.manifest }}
       environment: ${{ job.environment }}
       action: CREATE_RELEASE
@@ -95,7 +95,7 @@ jobs:
     environment: demo-cluster
     uses: .cloudbees/workflows/deployer.yml
     secrets: inherit
-    inputs:
+    with:
       manifest: ${{ inputs.manifest }}
       environment: ${{ job.environment }}
       action: DELETE_IMAGE
@@ -107,7 +107,7 @@ jobs:
     environment: demo-cluster
     uses: .cloudbees/workflows/deployer.yml
     secrets: inherit
-    inputs:
+    with:
       manifest: ${{ inputs.manifest }}
       environment: ${{ job.environment }}
       action: BULK_UPDATE
@@ -138,7 +138,7 @@ jobs:
     environment: demo-cluster
     uses: .cloudbees/workflows/deployer.yml
     secrets: inherit
-    inputs:
+    with:
       manifest: ${{ inputs.manifest }}
       environment: ${{ job.environment }}
       action: OS_TYPE_ACCESS
@@ -152,7 +152,7 @@ jobs:
     environment: demo-cluster
     uses: .cloudbees/workflows/deployer.yml
     secrets: inherit
-    inputs:
+    with:
       manifest: ${{ inputs.manifest }}
       environment: ${{ job.environment }}
       action: OS_TYPE_ACCESS
