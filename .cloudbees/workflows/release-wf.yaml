@@ -1,0 +1,73 @@
+# release-wf.yml
+#
+# Staged-workflow counterpart to irt-demo-baseline.yaml — this is the more
+# literal "Release Orchestration" shape (stages, environments, a reusable
+# deployer workflow) as opposed to the CI-style webhook/if: pattern in the
+# baseline. Mirrors app-hpe-ngsm's release-wf.yml pattern almost exactly:
+# metadata: stages/v1alpha1 for the pipeline view, an Approve gate, then a
+# stage job that calls a separate deployer.yml.
+#
+# Deliberately ONE real stage — Demo-Cluster — same reasoning as the HPE
+# example: don't invent a DEV/STAGING/PROD progression that doesn't exist
+# yet. Add more stages the same way once there's a second real environment:
+# copy the Demo-Cluster job, point `environment:` at the new one, chain
+# `needs:` off this stage.
+#
+# NOT YET RUN against a live Unify org. Built from the confirmed HPE
+# example plus the workflow_call + secrets syntax from CloudBees's
+# workflow-syntax-reference docs — treat the first run as a real test,
+# same as everything else built today. Two things flagged as unverified:
+#   - Whether `instructions:` is actually required on the Approve job —
+#     HPE's real example omits it despite the docs table marking it
+#     required. Left out here to match their working example; add it
+#     back if the run demands it.
+#   - `vars: inherit` — included to match the HPE pattern, but
+#     deployer.yml doesn't actually depend on it (see that file's notes).
+
+apiVersion: automation.cloudbees.io/v1alpha1
+kind: workflow
+name: IRT Demo Release WF
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest:
+        type: string
+        required: true
+        description: >
+          JSON manifest describing what to deploy, e.g.
+          {"releaseName": "bulkcreate", "releaseVersion": "1.2"}
+
+metadata:
+  stages/v1alpha1:
+    - name: Demo-Cluster
+      jobs:
+        - Approve
+        - Demo-Cluster
+
+jobs:
+  Approve:
+    timeout-minutes: 4320
+    delegates: cloudbees-io/manual-approval/custom-job.yml@v1
+    with:
+      # false = anyone can self-approve, so one person can drive the whole
+      # demo solo (same convention HPE's example uses on purpose). Flip to
+      # true for the real separation-of-duties story — same tradeoff as
+      # the OS Type Access approval in irt-demo-baseline.yaml, just
+      # decided the other way here for live-demo practicality.
+      disallowLaunchByUser: false
+      notifyAllEligibleUsers: false
+      approvers: ""
+      approvalInputs: |
+        Comment:
+          type: string
+
+  Demo-Cluster:
+    needs: Approve
+    environment: demo-cluster
+    uses: .cloudbees/workflows/deployer.yml
+    vars: inherit
+    secrets: inherit
+    with:
+      manifest: ${{ inputs.manifest }}
+      environment: ${{ job.environment }}
