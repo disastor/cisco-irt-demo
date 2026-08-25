@@ -7,10 +7,17 @@
 # from Cisco's own real CD/RO pipeline (Request, Release, Images-Deletion,
 # Images-BulkUpdate, GuestApproval) so the shape looks familiar.
 #
-# Multi-select works the same way as the baseline: `actions` is a
-# comma-separated field, this time embedded INSIDE the manifest JSON
-# (since a staged workflow only exposes one input, `manifest`) instead
-# of being its own top-level input.
+# Multi-select still works the same way as the baseline: `actions` is a
+# comma-separated field embedded inside the manifest JSON. The difference
+# is execution order, not capability — staged workflows enforce strict
+# sequential stages (confirmed by a live schema error: each stage's job
+# must `needs:` every terminal job of the stage immediately before it).
+# So requesting multiple actions still runs all of them in one pipeline,
+# they just execute one stage after another instead of in parallel like
+# the baseline CI-style workflow does. This is arguably more authentic
+# to what Cisco actually sees in CD/RO today — their real pipeline runs
+# stages left to right in sequence too, skipping ones that don't apply,
+# rather than branching in parallel.
 #
 # NOT YET RUN. Two things flagged as genuinely new/untested here:
 #   - `if:` conditions chain fromJSON(inputs.manifest).actions — a
@@ -90,7 +97,7 @@ jobs:
 
   # ---- Only runs if actions includes DELETE_IMAGE ----
   Images-Deletion:
-    needs: [Request]
+    needs: [Release]
     if: ${{ contains(fromJSON(inputs.manifest).actions, 'DELETE_IMAGE') }}
     environment: demo-cluster
     uses: .cloudbees/workflows/deployer.yaml
@@ -102,7 +109,7 @@ jobs:
 
   # ---- Only runs if actions includes BULK_UPDATE ----
   Images-BulkUpdate:
-    needs: [Request]
+    needs: [Images-Deletion]
     if: ${{ contains(fromJSON(inputs.manifest).actions, 'BULK_UPDATE') }}
     environment: demo-cluster
     uses: .cloudbees/workflows/deployer.yaml
@@ -115,7 +122,7 @@ jobs:
   # ---- Manual approval gate: only inserted for Admin-level OS Type
   #      Access requests. Named to match Cisco's own real stage name. ----
   GuestApproval:
-    needs: [Request]
+    needs: [Images-BulkUpdate]
     if: >-
       ${{ contains(fromJSON(inputs.manifest).actions, 'OS_TYPE_ACCESS') &&
           fromJSON(inputs.manifest).osTypeAccess.accessLevel == 'Admin' }}
@@ -131,7 +138,7 @@ jobs:
 
   # ---- Grants access immediately for non-Admin requests ----
   OSTypeAccess-Standard:
-    needs: [Request]
+    needs: [GuestApproval]
     if: >-
       ${{ contains(fromJSON(inputs.manifest).actions, 'OS_TYPE_ACCESS') &&
           fromJSON(inputs.manifest).osTypeAccess.accessLevel != 'Admin' }}
