@@ -83,6 +83,7 @@ jobs:
   Request:
     outputs:
       needsApproval: ${{ steps.check-approval.outputs.needsApproval }}
+      needsStandardGrant: ${{ steps.check-approval.outputs.needsStandardGrant }}
     steps:
       - name: Log manifest received
         uses: docker://bash:5
@@ -91,15 +92,22 @@ jobs:
           echo "Manifest received: ${{ inputs.manifest }}"
 
       - id: check-approval
-        name: Determine whether approval is required
+        name: Determine OS Type Access routing
         uses: docker://bash:5
         shell: bash
         run: |
           MANIFEST='${{ inputs.manifest }}'
-          if echo "$MANIFEST" | grep -q 'OS_TYPE_ACCESS' && echo "$MANIFEST" | grep -q '"accessLevel"[[:space:]]*:[[:space:]]*"Admin"'; then
-            printf '%s' "true" > "$CLOUDBEES_OUTPUTS/needsApproval"
+          if echo "$MANIFEST" | grep -q 'OS_TYPE_ACCESS'; then
+            if echo "$MANIFEST" | grep -q '"accessLevel"[[:space:]]*:[[:space:]]*"Admin"'; then
+              printf '%s' "true"  > "$CLOUDBEES_OUTPUTS/needsApproval"
+              printf '%s' "false" > "$CLOUDBEES_OUTPUTS/needsStandardGrant"
+            else
+              printf '%s' "false" > "$CLOUDBEES_OUTPUTS/needsApproval"
+              printf '%s' "true"  > "$CLOUDBEES_OUTPUTS/needsStandardGrant"
+            fi
           else
             printf '%s' "false" > "$CLOUDBEES_OUTPUTS/needsApproval"
+            printf '%s' "false" > "$CLOUDBEES_OUTPUTS/needsStandardGrant"
           fi
 
   # ---- Only runs if actions includes CREATE_RELEASE ----
@@ -158,12 +166,16 @@ jobs:
     timeout-minutes: 4320
     delegates: cloudbees-io/manual-approval/custom-job.yml@v1
 
-  # ---- Grants access immediately for non-Admin requests ----
+  # ---- Grants access immediately for non-Admin requests. `if:` reads
+  #      the safely-computed Request output rather than touching
+  #      fromJSON(inputs.manifest).osTypeAccess directly — confirmed by
+  #      a live error that accessing .accessLevel on a manifest with no
+  #      osTypeAccess key throws, and && does not short-circuit here, so
+  #      the second half of a combined condition still gets evaluated
+  #      even when the first half is already false. ----
   OSTypeAccess-Standard:
-    needs: [GuestApproval]
-    if: >-
-      ${{ contains(fromJSON(inputs.manifest).actions, 'OS_TYPE_ACCESS') &&
-          fromJSON(inputs.manifest).osTypeAccess.accessLevel != 'Admin' }}
+    needs: [GuestApproval, Request]
+    if: ${{ needs.Request.outputs.needsStandardGrant == 'true' }}
     environment: demo-cluster
     uses: .cloudbees/workflows/deployer.yaml
     secrets: inherit
@@ -172,12 +184,11 @@ jobs:
       environment: ${{ job.environment }}
       action: OS_TYPE_ACCESS
 
-  # ---- Grants access only after GuestApproval completes ----
+  # ---- Grants access only after GuestApproval completes. Same fix as
+  #      OSTypeAccess-Standard above. ----
   OSTypeAccess-Admin:
-    needs: [GuestApproval]
-    if: >-
-      ${{ contains(fromJSON(inputs.manifest).actions, 'OS_TYPE_ACCESS') &&
-          fromJSON(inputs.manifest).osTypeAccess.accessLevel == 'Admin' }}
+    needs: [GuestApproval, Request]
+    if: ${{ needs.Request.outputs.needsApproval == 'true' }}
     environment: demo-cluster
     uses: .cloudbees/workflows/deployer.yaml
     secrets: inherit
