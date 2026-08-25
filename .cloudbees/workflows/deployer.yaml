@@ -49,6 +49,9 @@ jobs:
           gcloud container clusters get-credentials ${{ env.GCP_CLUSTER }} --zone ${{ env.GCP_ZONE }} --quiet
 
           echo '${{ inputs.manifest }}' > /tmp/manifest.json
+          echo "---- Raw contents of /tmp/manifest.json ----"
+          cat -A /tmp/manifest.json
+          echo "---------------------------------------------"
           RELEASE_NAME=$(jq -r '.releaseName' /tmp/manifest.json)
           RELEASE_VERSION=$(jq -r '.releaseVersion' /tmp/manifest.json)
 
